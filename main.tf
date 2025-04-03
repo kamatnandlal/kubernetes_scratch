@@ -162,6 +162,10 @@ resource "google_compute_instance" "master" {
       # Verify node status
       "until kubectl get nodes | grep -q 'Ready'; do sleep 5; done",
       
+      # Create join command file
+      "kubeadm token create --print-join-command > /tmp/join_command.sh",
+      "chmod +x /tmp/join_command.sh",
+      
       # Clone repo and apply manifests
       "git clone https://github.com/${var.github_username}/${var.github_repo}.git /tmp/k8s-demo || echo 'Git clone failed (non-critical)'",
       "kubectl apply -f /tmp/k8s-demo/${var.github_manifest_path} || echo 'Manifest apply failed (non-critical)'"
@@ -253,10 +257,14 @@ resource "google_compute_instance" "worker" {
       # Wait for master API to be ready
       "until nc -zv ${google_compute_instance.master.network_interface.0.network_ip} 6443; do sleep 10; done",
       
+      # Copy join command from master
+      "ssh -i /tmp/k8s_ssh_key -o StrictHostKeyChecking=no ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} 'cat /tmp/join_command.sh' > /tmp/join_command.sh",
+      "chmod +x /tmp/join_command.sh",
+      
       # Join cluster with retry
       "max_retries=5",
       "count=0",
-      "until sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
+      "until sudo /tmp/join_command.sh --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
       "  echo 'Join attempt $((count+1)) failed. Retrying in 30 seconds...'",
       "  sleep 30",
       "  sudo systemctl restart kubelet",
@@ -273,31 +281,7 @@ resource "google_compute_instance" "worker" {
     }
   }
 
-  depends_on = [google_compute_instance.master, data.external.join_info]
-}
-
-# Get join token and cert hash from master
-data "external" "join_info" {
-  program = ["bash", "-c", <<EOT
-    join_command=$(ssh -i ${path.module}/k8s_ssh_key \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=30 \
-        ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
-        "kubeadm token create --print-join-command")
-    
-    token=$(echo "$join_command" | awk '{print \$5}')
-    hash=$(echo "$join_command" | awk '{print \$7}')
-    
-    echo "{\"token\":\"$token\", \"hash\":\"$hash\"}"
-  EOT
-  ]
-
   depends_on = [google_compute_instance.master]
-}
-
-locals {
-  join_token                  = data.external.join_info.result.token
-  discovery_token_ca_cert_hash = data.external.join_info.result.hash
 }
 
 # Variables
