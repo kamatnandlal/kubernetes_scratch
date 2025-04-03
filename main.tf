@@ -201,7 +201,7 @@ resource "google_compute_instance" "worker" {
 
   provisioner "remote-exec" {
     inline = [
-      # Same system preparation as master
+      # System preparation (including jq)
       "sudo apt-get update -y",
       "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release jq",
       
@@ -247,14 +247,44 @@ resource "google_compute_instance" "worker" {
     }
   }
 
+  # Worker join command
+  provisioner "remote-exec" {
+    inline = [
+      # Wait for master API to be ready
+      "until nc -zv ${google_compute_instance.master.network_interface.0.network_ip} 6443; do sleep 10; done",
+      
+      # Join cluster with retry
+      "max_retries=5",
+      "count=0",
+      "until sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
+      "  echo 'Join attempt $((count+1)) failed. Retrying in 30 seconds...'",
+      "  sleep 30",
+      "  sudo systemctl restart kubelet",
+      "  count=$((count+1))",
+      "done"
+    ]
+
+    connection {
+      type        = "ssh"
+      host        = self.network_interface[0].access_config[0].nat_ip
+      user        = var.ssh_user
+      private_key = tls_private_key.k8s_ssh.private_key_openssh
+      timeout     = "15m"
+    }
+  }
+
   depends_on = [google_compute_instance.master]
 }
 
 # Get join token and cert hash from master
 data "external" "join_info" {
   program = ["bash", "-c", <<EOT
-    ssh -i ${path.module}/k8s_ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
-    "kubeadm token create --print-join-command" | awk '{print "{\"token\": \"" $3 "\", \"hash\": \"" $5 "\"}"}' | jq .
+    ssh -i ${path.module}/k8s_ssh_key \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=30 \
+        ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
+        "kubeadm token create --print-join-command" | \
+        awk '{printf "{\\"token\\": \\"%s\\", \\"hash\\": \\"%s\\"}", \$3, \$5}'
   EOT
   ]
 
