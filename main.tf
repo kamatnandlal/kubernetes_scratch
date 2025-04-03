@@ -151,10 +151,12 @@ resource "google_compute_instance" "master" {
       "  count=$((count+1))",
       "done",
       
-      # Configure kubectl
+      # Configure kubectl properly
       "mkdir -p $HOME/.kube",
       "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
       "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
+      "echo 'export KUBECONFIG=$HOME/.kube/config' >> $HOME/.bashrc",
+      "source $HOME/.bashrc",
       
       # Install network plugin
       "kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml",
@@ -325,22 +327,26 @@ variable "github_branch" {
 }
 
 output "master_public_ip" {
-  value = google_compute_instance.master.network_interface.0.access_config.0.nat_ip
+  value       = google_compute_instance.master.network_interface.0.access_config.0.nat_ip
+  description = "Public IP address of the master node"
 }
 
 output "worker_public_ip" {
-  value = google_compute_instance.worker.network_interface.0.access_config.0.nat_ip
+  value       = google_compute_instance.worker.network_interface.0.access_config.0.nat_ip
+  description = "Public IP address of the worker node"
 }
 
 output "kubeconfig_command" {
-  value = "ssh -i ${path.module}/k8s_ssh_key ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} 'cat ~/.kube/config' > kubeconfig.yaml"
+  value       = "ssh -i ${path.module}/k8s_ssh_key ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} 'cat ~/.kube/config' > kubeconfig.yaml"
+  description = "Command to retrieve kubeconfig"
 }
 
-output "ssh_private_key" {
-  value     = tls_private_key.k8s_ssh.private_key_openssh
-  sensitive = true
+output "ssh_key_path" {
+  value       = "${path.module}/k8s_ssh_key"
+  description = "Path to the generated SSH private key"
 }
 
 output "ssh_public_key" {
-  value = tls_private_key.k8s_ssh.public_key_openssh
+  value       = tls_private_key.k8s_ssh.public_key_openssh
+  description = "SSH public key for accessing nodes"
 }
