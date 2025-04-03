@@ -254,7 +254,7 @@ resource "google_compute_instance" "worker" {
 data "external" "join_info" {
   program = ["bash", "-c", <<EOT
     ssh -i ${path.module}/k8s_ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
-    "kubeadm token create --print-join-command" | awk '{print "{\\"token\\": \\"" $3 "\\", \\"hash\\": \\"" $5 "\\"}"}' | jq .
+    "kubeadm token create --print-join-command" | awk '{print "{\"token\": \"" $3 "\", \"hash\": \"" $5 "\"}"}' | jq .
   EOT
   ]
 
