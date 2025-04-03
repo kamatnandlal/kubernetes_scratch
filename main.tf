@@ -17,8 +17,50 @@ resource "google_compute_subnetwork" "k8s_subnet" {
   network       = google_compute_network.k8s_network.id
 }
 
-# Firewall rules (previous rules remain the same)
-# ... [previous firewall rules remain unchanged] ...
+# Firewall rule to allow internal communication
+resource "google_compute_firewall" "k8s_internal" {
+  name    = "k8s-internal"
+  network = google_compute_network.k8s_network.name
+
+  allow {
+    protocol = "tcp"
+  }
+  allow {
+    protocol = "udp"
+  }
+  allow {
+    protocol = "icmp"
+  }
+
+  source_ranges = ["10.0.0.0/24"]
+}
+
+# Firewall rule to allow SSH
+resource "google_compute_firewall" "k8s_ssh" {
+  name    = "k8s-ssh"
+  network = google_compute_network.k8s_network.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+}
+
+# Firewall rule to allow Kubernetes API server
+resource "google_compute_firewall" "k8s_api" {
+  name    = "k8s-api"
+  network = google_compute_network.k8s_network.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["6443"]
+  }
+
+  target_tags   = ["master"]
+  source_ranges = ["0.0.0.0/0"]
+}
 
 # Master node
 resource "google_compute_instance" "master" {
@@ -69,9 +111,7 @@ resource "google_compute_instance" "master" {
       # Clone the GitHub repository (using HTTPS)
       "git clone https://github.com/${var.github_username}/${var.github_repo}.git /tmp/k8s-demo",
       # Apply demo.yml from GitHub
-      "kubectl apply -f /tmp/k8s-demo/${var.github_manifest_path}",
-      # Alternatively, if using raw GitHub URL:
-      # "kubectl apply -f https://raw.githubusercontent.com/${var.github_username}/${var.github_repo}/${var.github_branch}/${var.github_manifest_path}"
+      "kubectl apply -f /tmp/k8s-demo/${var.github_manifest_path}"
     ]
 
     connection {
@@ -83,8 +123,71 @@ resource "google_compute_instance" "master" {
   }
 }
 
-# Worker node (previous worker node configuration remains the same)
-# ... [previous worker node configuration remains unchanged] ...
+# Worker node
+resource "google_compute_instance" "worker" {
+  name         = "k8s-worker"
+  machine_type = "n2-standard-2"
+  zone         = "${var.region}-a"
+
+  boot_disk {
+    initialize_params {
+      image = "ubuntu-os-cloud/ubuntu-2204-lts"
+      size  = 50
+    }
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.k8s_subnet.self_link
+
+    access_config {
+      // Ephemeral public IP
+    }
+  }
+
+  metadata = {
+    ssh-keys = "${var.ssh_user}:${file(var.ssh_pub_key_path)}"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo apt-get update",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl",
+      "sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg",
+      "echo \"deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main\" | sudo tee /etc/apt/sources.list.d/kubernetes.list",
+      "sudo apt-get update",
+      "sudo apt-get install -y kubelet kubeadm kubectl",
+      "sudo apt-mark hold kubelet kubeadm kubectl",
+      "sudo swapoff -a",
+      "sudo sed -i '/ swap / s/^/#/' /etc/fstab",
+      "sudo modprobe br_netfilter",
+      "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward"
+    ]
+
+    connection {
+      type        = "ssh"
+      host        = self.network_interface[0].access_config[0].nat_ip
+      user        = var.ssh_user
+      private_key = file(var.ssh_priv_key_path)
+    }
+  }
+
+  # Wait for master to be ready and then join the cluster
+  provisioner "remote-exec" {
+    inline = [
+      "until curl -k https://${google_compute_instance.master.network_interface.0.network_ip}:6443; do sleep 5; done",
+      "sudo ${join(" ", google_compute_instance.master.provisioner[0].inline[11])} --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash}"
+    ]
+
+    connection {
+      type        = "ssh"
+      host        = self.network_interface[0].access_config[0].nat_ip
+      user        = var.ssh_user
+      private_key = file(var.ssh_priv_key_path)
+    }
+  }
+
+  depends_on = [google_compute_instance.master]
+}
 
 # Get join token and cert hash from master
 data "external" "join_info" {
