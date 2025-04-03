@@ -80,7 +80,7 @@ resource "google_compute_firewall" "k8s_api" {
   source_ranges = ["0.0.0.0/0"]
 }
 
-# Master node with fixed multi-line strings
+# Master node
 resource "google_compute_instance" "master" {
   name         = "k8s-master"
   machine_type = "n2-standard-2"
@@ -107,7 +107,7 @@ resource "google_compute_instance" "master" {
     inline = [
       # System preparation
       "sudo apt-get update -y",
-      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release jq",
       
       # Configure container runtime (containerd)
       "sudo mkdir -p /etc/apt/keyrings",
@@ -177,7 +177,7 @@ resource "google_compute_instance" "master" {
   }
 }
 
-# Worker node with fixed multi-line strings
+# Worker node
 resource "google_compute_instance" "worker" {
   name         = "k8s-worker"
   machine_type = "n2-standard-2"
@@ -203,7 +203,7 @@ resource "google_compute_instance" "worker" {
     inline = [
       # Same system preparation as master
       "sudo apt-get update -y",
-      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release jq",
       
       # Configure container runtime
       "sudo mkdir -p /etc/apt/keyrings",
@@ -247,31 +247,6 @@ resource "google_compute_instance" "worker" {
     }
   }
 
-  provisioner "remote-exec" {
-    inline = [
-      # Wait for master to be ready
-      "until nc -zv ${google_compute_instance.master.network_interface.0.network_ip} 6443; do sleep 10; done",
-      
-      # Join cluster with retry
-      "max_retries=5",
-      "count=0",
-      "until sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
-      "  echo 'Join attempt $((count+1)) failed. Retrying in 30 seconds...'",
-      "  sleep 30",
-      "  sudo systemctl restart kubelet",
-      "  count=$((count+1))",
-      "done"
-    ]
-
-    connection {
-      type        = "ssh"
-      host        = self.network_interface[0].access_config[0].nat_ip
-      user        = var.ssh_user
-      private_key = tls_private_key.k8s_ssh.private_key_openssh
-      timeout     = "15m"
-    }
-  }
-
   depends_on = [google_compute_instance.master]
 }
 
@@ -279,7 +254,7 @@ resource "google_compute_instance" "worker" {
 data "external" "join_info" {
   program = ["bash", "-c", <<EOT
     ssh -i ${path.module}/k8s_ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
-    "kubeadm token create --print-join-command" | awk '{print \"{\\\"token\\\": \\\"\" $3 \"\\\", \\\"hash\\\": \\\"\" $5 \"\\\"}\"}' | jq .
+    "kubeadm token create --print-join-command" | awk '{print "{\\"token\\": \\"" $3 "\\", \\"hash\\": \\"" $5 "\\"}"}' | jq .
   EOT
   ]
 
