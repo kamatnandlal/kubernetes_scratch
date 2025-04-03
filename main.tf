@@ -80,7 +80,7 @@ resource "google_compute_firewall" "k8s_api" {
   source_ranges = ["0.0.0.0/0"]
 }
 
-# Master node with kubelet fixes
+# Master node with fixed multi-line strings
 resource "google_compute_instance" "master" {
   name         = "k8s-master"
   machine_type = "n2-standard-2"
@@ -132,14 +132,8 @@ resource "google_compute_instance" "master" {
       "sudo sed -i '/ swap / s/^/#/' /etc/fstab",
       "sudo modprobe br_netfilter",
       "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward",
-      "cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
-br_netfilter
-EOF",
-      "cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-net.ipv4.ip_forward = 1
-EOF",
+      "echo 'br_netfilter' | sudo tee /etc/modules-load.d/k8s.conf",
+      "echo 'net.bridge.bridge-nf-call-ip6tables = 1\nnet.bridge.bridge-nf-call-iptables = 1\nnet.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/k8s.conf",
       "sudo sysctl --system",
       
       # Initialize cluster with kubelet workaround
@@ -151,16 +145,16 @@ EOF",
       "max_retries=5",
       "count=0",
       "until sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=${google_compute_instance.master.network_interface.0.network_ip} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
-      "  echo \"Cluster initialization attempt \$((count+1)) failed. Retrying in 30 seconds...\"",
+      "  echo 'Cluster initialization attempt $((count+1)) failed. Retrying in 30 seconds...'",
       "  sleep 30",
       "  sudo systemctl restart kubelet",
-      "  count=\$((count+1))",
+      "  count=$((count+1))",
       "done",
       
       # Configure kubectl
-      "mkdir -p \$HOME/.kube",
-      "sudo cp -i /etc/kubernetes/admin.conf \$HOME/.kube/config",
-      "sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config",
+      "mkdir -p $HOME/.kube",
+      "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
+      "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
       
       # Install network plugin
       "kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml",
@@ -183,7 +177,7 @@ EOF",
   }
 }
 
-# Worker node with similar fixes
+# Worker node with fixed multi-line strings
 resource "google_compute_instance" "worker" {
   name         = "k8s-worker"
   machine_type = "n2-standard-2"
@@ -234,14 +228,8 @@ resource "google_compute_instance" "worker" {
       "sudo sed -i '/ swap / s/^/#/' /etc/fstab",
       "sudo modprobe br_netfilter",
       "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward",
-      "cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
-br_netfilter
-EOF",
-      "cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-net.ipv4.ip_forward = 1
-EOF",
+      "echo 'br_netfilter' | sudo tee /etc/modules-load.d/k8s.conf",
+      "echo 'net.bridge.bridge-nf-call-ip6tables = 1\nnet.bridge.bridge-nf-call-iptables = 1\nnet.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/k8s.conf",
       "sudo sysctl --system",
       
       # Prepare kubelet
@@ -268,10 +256,10 @@ EOF",
       "max_retries=5",
       "count=0",
       "until sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
-      "  echo \"Join attempt \$((count+1)) failed. Retrying in 30 seconds...\"",
+      "  echo 'Join attempt $((count+1)) failed. Retrying in 30 seconds...'",
       "  sleep 30",
       "  sudo systemctl restart kubelet",
-      "  count=\$((count+1))",
+      "  count=$((count+1))",
       "done"
     ]
 
