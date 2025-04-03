@@ -17,7 +17,7 @@ resource "google_compute_subnetwork" "k8s_subnet" {
   network       = google_compute_network.k8s_network.id
 }
 
-# Firewall rule to allow internal communication
+# Firewall rules
 resource "google_compute_firewall" "k8s_internal" {
   name    = "k8s-internal"
   network = google_compute_network.k8s_network.name
@@ -35,7 +35,6 @@ resource "google_compute_firewall" "k8s_internal" {
   source_ranges = ["10.0.0.0/24"]
 }
 
-# Firewall rule to allow SSH
 resource "google_compute_firewall" "k8s_ssh" {
   name    = "k8s-ssh"
   network = google_compute_network.k8s_network.name
@@ -48,7 +47,6 @@ resource "google_compute_firewall" "k8s_ssh" {
   source_ranges = ["0.0.0.0/0"]
 }
 
-# Firewall rule to allow Kubernetes API server
 resource "google_compute_firewall" "k8s_api" {
   name    = "k8s-api"
   network = google_compute_network.k8s_network.name
@@ -78,10 +76,7 @@ resource "google_compute_instance" "master" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.k8s_subnet.self_link
-
-    access_config {
-      // Ephemeral public IP
-    }
+    access_config {} # Ephemeral public IP
   }
 
   metadata = {
@@ -106,11 +101,8 @@ resource "google_compute_instance" "master" {
       "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
       "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
       "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml",
-      # Install git to clone the repository
       "sudo apt-get install -y git",
-      # Clone the GitHub repository (using HTTPS)
       "git clone https://github.com/${var.github_username}/${var.github_repo}.git /tmp/k8s-demo",
-      # Apply demo.yml from GitHub
       "kubectl apply -f /tmp/k8s-demo/${var.github_manifest_path}"
     ]
 
@@ -138,10 +130,7 @@ resource "google_compute_instance" "worker" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.k8s_subnet.self_link
-
-    access_config {
-      // Ephemeral public IP
-    }
+    access_config {} # Ephemeral public IP
   }
 
   metadata = {
@@ -171,11 +160,11 @@ resource "google_compute_instance" "worker" {
     }
   }
 
-  # Wait for master to be ready and then join the cluster
+  # Separate provisioner for joining the cluster
   provisioner "remote-exec" {
     inline = [
       "until curl -k https://${google_compute_instance.master.network_interface.0.network_ip}:6443; do sleep 5; done",
-      "sudo ${join(" ", google_compute_instance.master.provisioner[0].inline[11])} --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash}"
+      "sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash}"
     ]
 
     connection {
