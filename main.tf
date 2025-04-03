@@ -160,7 +160,6 @@ resource "google_compute_instance" "worker" {
     }
   }
 
-  # Separate provisioner for joining the cluster
   provisioner "remote-exec" {
     inline = [
       "until curl -k https://${google_compute_instance.master.network_interface.0.network_ip}:6443; do sleep 5; done",
@@ -211,15 +210,15 @@ variable "ssh_user" {
 }
 
 variable "ssh_pub_key_path" {
-  description = "Path to the public SSH key"
+  description = "Absolute path to the public SSH key"
   type        = string
-  default     = "~/.ssh/id_rsa.pub"
+  default     = "/home/nandlalkamat5/.ssh/id_rsa.pub"  # CHANGE THIS TO YOUR ACTUAL PATH
 }
 
 variable "ssh_priv_key_path" {
-  description = "Path to the private SSH key"
+  description = "Absolute path to the private SSH key"
   type        = string
-  default     = "~/.ssh/id_rsa"
+  default     = "/home/nandlalkamat5/.ssh/id_rsa"      # CHANGE THIS TO YOUR ACTUAL PATH
 }
 
 variable "github_username" {
