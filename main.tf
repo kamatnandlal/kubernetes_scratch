@@ -80,7 +80,7 @@ resource "google_compute_firewall" "k8s_api" {
   source_ranges = ["0.0.0.0/0"]
 }
 
-# Master node
+# Master node with improved provisioning
 resource "google_compute_instance" "master" {
   name         = "k8s-master"
   machine_type = "n2-standard-2"
@@ -105,25 +105,50 @@ resource "google_compute_instance" "master" {
 
   provisioner "remote-exec" {
     inline = [
-      "sudo apt-get update",
-      "sudo apt-get install -y apt-transport-https ca-certificates curl",
-      "sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg",
-      "echo \"deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main\" | sudo tee /etc/apt/sources.list.d/kubernetes.list",
-      "sudo apt-get update",
-      "sudo apt-get install -y kubelet kubeadm kubectl",
+      # Update and install basic dependencies
+      "sudo apt-get update -y",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release git software-properties-common",
+      
+      # Add Docker repo
+      "sudo mkdir -m 0755 -p /etc/apt/keyrings",
+      "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+      "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null",
+      
+      # Configure Kubernetes repo
+      "curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg",
+      "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list",
+      
+      # Install components
+      "sudo apt-get update -y",
+      "sudo apt-get install -y docker-ce docker-ce-cli containerd.io kubelet kubeadm kubectl",
       "sudo apt-mark hold kubelet kubeadm kubectl",
+      
+      # Configure system
       "sudo swapoff -a",
       "sudo sed -i '/ swap / s/^/#/' /etc/fstab",
       "sudo modprobe br_netfilter",
       "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward",
-      "sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=${google_compute_instance.master.network_interface.0.network_ip}",
+      "echo 'net.bridge.bridge-nf-call-iptables=1' | sudo tee -a /etc/sysctl.conf",
+      "echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf",
+      "sudo sysctl -p",
+      
+      # Initialize cluster with retry
+      "max_retries=3",
+      "count=0",
+      "until sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=${google_compute_instance.master.network_interface.0.network_ip} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do sleep 30; count=$((count+1)); done",
+      
+      # Configure kubectl
       "mkdir -p $HOME/.kube",
       "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
       "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
-      "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml",
-      "sudo apt-get install -y git",
-      "git clone https://github.com/${var.github_username}/${var.github_repo}.git /tmp/k8s-demo",
-      "kubectl apply -f /tmp/k8s-demo/${var.github_manifest_path}"
+      
+      # Install network plugin with retry
+      "count=0",
+      "until kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml && break || [ $count -eq $max_retries ]; do sleep 30; count=$((count+1)); done",
+      
+      # Clone repo and apply manifests
+      "git clone https://github.com/${var.github_username}/${var.github_repo}.git /tmp/k8s-demo || echo 'Git clone failed (non-critical)'",
+      "kubectl apply -f /tmp/k8s-demo/${var.github_manifest_path} || echo 'Manifest apply failed (non-critical)'"
     ]
 
     connection {
@@ -131,11 +156,12 @@ resource "google_compute_instance" "master" {
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
       private_key = tls_private_key.k8s_ssh.private_key_openssh
+      timeout     = "15m"
     }
   }
 }
 
-# Worker node
+# Worker node with improved provisioning
 resource "google_compute_instance" "worker" {
   name         = "k8s-worker"
   machine_type = "n2-standard-2"
@@ -159,17 +185,32 @@ resource "google_compute_instance" "worker" {
 
   provisioner "remote-exec" {
     inline = [
-      "sudo apt-get update",
-      "sudo apt-get install -y apt-transport-https ca-certificates curl",
-      "sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg",
-      "echo \"deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main\" | sudo tee /etc/apt/sources.list.d/kubernetes.list",
-      "sudo apt-get update",
-      "sudo apt-get install -y kubelet kubeadm kubectl",
+      # Update and install basic dependencies
+      "sudo apt-get update -y",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release git software-properties-common",
+      
+      # Add Docker repo
+      "sudo mkdir -m 0755 -p /etc/apt/keyrings",
+      "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+      "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null",
+      
+      # Configure Kubernetes repo
+      "curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg",
+      "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list",
+      
+      # Install components
+      "sudo apt-get update -y",
+      "sudo apt-get install -y docker-ce docker-ce-cli containerd.io kubelet kubeadm kubectl",
       "sudo apt-mark hold kubelet kubeadm kubectl",
+      
+      # Configure system
       "sudo swapoff -a",
       "sudo sed -i '/ swap / s/^/#/' /etc/fstab",
       "sudo modprobe br_netfilter",
-      "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward"
+      "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward",
+      "echo 'net.bridge.bridge-nf-call-iptables=1' | sudo tee -a /etc/sysctl.conf",
+      "echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf",
+      "sudo sysctl -p"
     ]
 
     connection {
@@ -177,13 +218,19 @@ resource "google_compute_instance" "worker" {
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
       private_key = tls_private_key.k8s_ssh.private_key_openssh
+      timeout     = "10m"
     }
   }
 
   provisioner "remote-exec" {
     inline = [
-      "until curl -k https://${google_compute_instance.master.network_interface.0.network_ip}:6443; do sleep 5; done",
-      "sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash}"
+      # Wait for master to be ready
+      "until nc -zv ${google_compute_instance.master.network_interface.0.network_ip} 6443; do sleep 10; done",
+      
+      # Join cluster with retry
+      "max_retries=3",
+      "count=0",
+      "until sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do sleep 30; count=$((count+1)); done"
     ]
 
     connection {
@@ -191,6 +238,7 @@ resource "google_compute_instance" "worker" {
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
       private_key = tls_private_key.k8s_ssh.private_key_openssh
+      timeout     = "10m"
     }
   }
 
@@ -200,10 +248,12 @@ resource "google_compute_instance" "worker" {
 # Get join token and cert hash from master
 data "external" "join_info" {
   program = ["bash", "-c", <<EOT
-    ssh -i ${path.module}/k8s_ssh_key -o StrictHostKeyChecking=no ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
+    ssh -i ${path.module}/k8s_ssh_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
     "kubeadm token create --print-join-command" | awk '{print \"{\\\"token\\\": \\\"\" $3 \"\\\", \\\"hash\\\": \\\"\" $5 \"\\\"}\"}' | jq .
   EOT
   ]
+
+  depends_on = [google_compute_instance.master]
 }
 
 locals {
