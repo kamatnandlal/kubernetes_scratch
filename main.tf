@@ -3,6 +3,26 @@ provider "google" {
   region  = var.region
 }
 
+# Generate SSH key pair
+resource "tls_private_key" "k8s_ssh" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+# Save private key locally
+resource "local_file" "private_key" {
+  content         = tls_private_key.k8s_ssh.private_key_openssh
+  filename        = "${path.module}/k8s_ssh_key"
+  file_permission = "0600"
+}
+
+# Save public key locally
+resource "local_file" "public_key" {
+  content         = tls_private_key.k8s_ssh.public_key_openssh
+  filename        = "${path.module}/k8s_ssh_key.pub"
+  file_permission = "0644"
+}
+
 # Create VPC network
 resource "google_compute_network" "k8s_network" {
   name                    = "k8s-network"
@@ -80,7 +100,7 @@ resource "google_compute_instance" "master" {
   }
 
   metadata = {
-    ssh-keys = "${var.ssh_user}:${file(var.ssh_pub_key_path)}"
+    ssh-keys = "${var.ssh_user}:${tls_private_key.k8s_ssh.public_key_openssh}"
   }
 
   provisioner "remote-exec" {
@@ -110,7 +130,7 @@ resource "google_compute_instance" "master" {
       type        = "ssh"
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
-      private_key = file(var.ssh_priv_key_path)
+      private_key = tls_private_key.k8s_ssh.private_key_openssh
     }
   }
 }
@@ -134,7 +154,7 @@ resource "google_compute_instance" "worker" {
   }
 
   metadata = {
-    ssh-keys = "${var.ssh_user}:${file(var.ssh_pub_key_path)}"
+    ssh-keys = "${var.ssh_user}:${tls_private_key.k8s_ssh.public_key_openssh}"
   }
 
   provisioner "remote-exec" {
@@ -156,7 +176,7 @@ resource "google_compute_instance" "worker" {
       type        = "ssh"
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
-      private_key = file(var.ssh_priv_key_path)
+      private_key = tls_private_key.k8s_ssh.private_key_openssh
     }
   }
 
@@ -170,7 +190,7 @@ resource "google_compute_instance" "worker" {
       type        = "ssh"
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
-      private_key = file(var.ssh_priv_key_path)
+      private_key = tls_private_key.k8s_ssh.private_key_openssh
     }
   }
 
@@ -180,7 +200,7 @@ resource "google_compute_instance" "worker" {
 # Get join token and cert hash from master
 data "external" "join_info" {
   program = ["bash", "-c", <<EOT
-    ssh -i ${var.ssh_priv_key_path} -o StrictHostKeyChecking=no ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
+    ssh -i ${path.module}/k8s_ssh_key -o StrictHostKeyChecking=no ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
     "kubeadm token create --print-join-command" | awk '{print \"{\\\"token\\\": \\\"\" $3 \"\\\", \\\"hash\\\": \\\"\" $5 \"\\\"}\"}' | jq .
   EOT
   ]
@@ -207,18 +227,6 @@ variable "ssh_user" {
   description = "SSH user name"
   type        = string
   default     = "ubuntu"
-}
-
-variable "ssh_pub_key_path" {
-  description = "Absolute path to the public SSH key"
-  type        = string
-  default     = "/home/nandlalkamat5/.ssh/id_rsa.pub"  # CHANGE THIS TO YOUR ACTUAL PATH
-}
-
-variable "ssh_priv_key_path" {
-  description = "Absolute path to the private SSH key"
-  type        = string
-  default     = "/home/nandlalkamat5/.ssh/id_rsa"      # CHANGE THIS TO YOUR ACTUAL PATH
 }
 
 variable "github_username" {
@@ -252,5 +260,14 @@ output "worker_public_ip" {
 }
 
 output "kubeconfig_command" {
-  value = "ssh -i ${var.ssh_priv_key_path} ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} 'cat ~/.kube/config' > kubeconfig.yaml"
+  value = "ssh -i ${path.module}/k8s_ssh_key ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} 'cat ~/.kube/config' > kubeconfig.yaml"
+}
+
+output "ssh_private_key" {
+  value     = tls_private_key.k8s_ssh.private_key_openssh
+  sensitive = true
+}
+
+output "ssh_public_key" {
+  value = tls_private_key.k8s_ssh.public_key_openssh
 }
