@@ -3,20 +3,6 @@ provider "google" {
   region  = var.region
 }
 
-# Create GCS bucket for demo.yml
-resource "google_storage_bucket" "k8s_demo_bucket" {
-  name          = "${var.project_id}-k8s-demo-bucket"
-  location      = var.region
-  force_destroy = true
-}
-
-# Upload demo.yml to the bucket
-resource "google_storage_bucket_object" "demo_manifest" {
-  name   = "demo.yml"
-  bucket = google_storage_bucket.k8s_demo_bucket.name
-  source = var.demo_manifest_path
-}
-
 # Create VPC network
 resource "google_compute_network" "k8s_network" {
   name                    = "k8s-network"
@@ -78,17 +64,14 @@ resource "google_compute_instance" "master" {
       "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
       "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
       "kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml",
-      # Install Google Cloud SDK to access GCS
-      "echo \"deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main\" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list",
-      "sudo apt-get install -y apt-transport-https ca-certificates gnupg",
-      "curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -",
-      "sudo apt-get update && sudo apt-get install -y google-cloud-sdk",
-      # Authenticate with the service account
-      "echo '${base64decode(google_service_account_key.k8s_key.private_key)}' > /tmp/service-account.json",
-      "gcloud auth activate-service-account --key-file=/tmp/service-account.json",
-      # Apply demo.yml from GCS
-      "gsutil cp gs://${google_storage_bucket.k8s_demo_bucket.name}/demo.yml /tmp/demo.yml",
-      "kubectl apply -f /tmp/demo.yml"
+      # Install git to clone the repository
+      "sudo apt-get install -y git",
+      # Clone the GitHub repository (using HTTPS)
+      "git clone https://github.com/${var.github_username}/${var.github_repo}.git /tmp/k8s-demo",
+      # Apply demo.yml from GitHub
+      "kubectl apply -f /tmp/k8s-demo/${var.github_manifest_path}",
+      # Alternatively, if using raw GitHub URL:
+      # "kubectl apply -f https://raw.githubusercontent.com/${var.github_username}/${var.github_repo}/${var.github_branch}/${var.github_manifest_path}"
     ]
 
     connection {
@@ -102,24 +85,6 @@ resource "google_compute_instance" "master" {
 
 # Worker node (previous worker node configuration remains the same)
 # ... [previous worker node configuration remains unchanged] ...
-
-# Service account for accessing GCS
-resource "google_service_account" "k8s_service_account" {
-  account_id   = "k8s-gcs-access"
-  display_name = "Service Account for Kubernetes GCS Access"
-}
-
-# Grant storage admin role to the service account
-resource "google_project_iam_member" "storage_admin" {
-  project = var.project_id
-  role    = "roles/storage.admin"
-  member  = "serviceAccount:${google_service_account.k8s_service_account.email}"
-}
-
-# Create service account key
-resource "google_service_account_key" "k8s_key" {
-  service_account_id = google_service_account.k8s_service_account.name
-}
 
 # Get join token and cert hash from master
 data "external" "join_info" {
@@ -165,10 +130,26 @@ variable "ssh_priv_key_path" {
   default     = "~/.ssh/id_rsa"
 }
 
-variable "demo_manifest_path" {
-  description = "Path to the demo.yml file to be applied to the cluster"
+variable "github_username" {
+  description = "GitHub username or organization name"
   type        = string
-  default     = "./demo.yml"
+}
+
+variable "github_repo" {
+  description = "GitHub repository name"
+  type        = string
+}
+
+variable "github_manifest_path" {
+  description = "Path to the demo.yml file in the repository"
+  type        = string
+  default     = "demo.yml"
+}
+
+variable "github_branch" {
+  description = "GitHub branch name"
+  type        = string
+  default     = "main"
 }
 
 output "master_public_ip" {
@@ -181,8 +162,4 @@ output "worker_public_ip" {
 
 output "kubeconfig_command" {
   value = "ssh -i ${var.ssh_priv_key_path} ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} 'cat ~/.kube/config' > kubeconfig.yaml"
-}
-
-output "demo_manifest_bucket" {
-  value = google_storage_bucket.k8s_demo_bucket.name
 }
