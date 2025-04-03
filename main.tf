@@ -273,18 +273,22 @@ resource "google_compute_instance" "worker" {
     }
   }
 
-  depends_on = [google_compute_instance.master]
+  depends_on = [google_compute_instance.master, data.external.join_info]
 }
 
 # Get join token and cert hash from master
 data "external" "join_info" {
   program = ["bash", "-c", <<EOT
-    ssh -i ${path.module}/k8s_ssh_key \
+    join_command=$(ssh -i ${path.module}/k8s_ssh_key \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=30 \
         ${var.ssh_user}@${google_compute_instance.master.network_interface.0.access_config.0.nat_ip} \
-        "kubeadm token create --print-join-command" | \
-        awk '{printf "{\\"token\\": \\"%s\\", \\"hash\\": \\"%s\\"}", \$3, \$5}'
+        "kubeadm token create --print-join-command")
+    
+    token=$(echo "$join_command" | awk '{print \$5}')
+    hash=$(echo "$join_command" | awk '{print \$7}')
+    
+    echo "{\"token\":\"$token\", \"hash\":\"$hash\"}"
   EOT
   ]
 
