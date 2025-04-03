@@ -212,13 +212,13 @@ variable "ssh_user" {
 variable "ssh_pub_key_path" {
   description = "Absolute path to the public SSH key"
   type        = string
-  default     = "/home/ubuntu/.ssh/id_rsa.pub"  # CHANGE THIS TO YOUR ACTUAL PATH
+  default     = "/home/nandlalkamat5/.ssh/id_rsa.pub"  # CHANGE THIS TO YOUR ACTUAL PATH
 }
 
 variable "ssh_priv_key_path" {
   description = "Absolute path to the private SSH key"
   type        = string
-  default     = "/home/ubuntu/.ssh/id_rsa"      # CHANGE THIS TO YOUR ACTUAL PATH
+  default     = "/home/nandlalkamat5/.ssh/id_rsa"      # CHANGE THIS TO YOUR ACTUAL PATH
 }
 
 variable "github_username" {
