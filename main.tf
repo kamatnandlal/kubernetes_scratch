@@ -80,7 +80,7 @@ resource "google_compute_firewall" "k8s_api" {
   source_ranges = ["0.0.0.0/0"]
 }
 
-# Master node with improved provisioning
+# Master node with kubelet fixes
 resource "google_compute_instance" "master" {
   name         = "k8s-master"
   machine_type = "n2-standard-2"
@@ -105,46 +105,68 @@ resource "google_compute_instance" "master" {
 
   provisioner "remote-exec" {
     inline = [
-      # Update and install basic dependencies
+      # System preparation
       "sudo apt-get update -y",
-      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release git software-properties-common",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release",
       
-      # Add Docker repo
-      "sudo mkdir -m 0755 -p /etc/apt/keyrings",
+      # Configure container runtime (containerd)
+      "sudo mkdir -p /etc/apt/keyrings",
       "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
       "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null",
+      "sudo apt-get update -y",
+      "sudo apt-get install -y containerd.io",
+      "sudo mkdir -p /etc/containerd",
+      "sudo containerd config default | sudo tee /etc/containerd/config.toml",
+      "sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml",
+      "sudo systemctl restart containerd",
       
-      # Configure Kubernetes repo
+      # Install Kubernetes components
       "curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg",
       "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list",
-      
-      # Install components
       "sudo apt-get update -y",
-      "sudo apt-get install -y docker-ce docker-ce-cli containerd.io kubelet kubeadm kubectl",
+      "sudo apt-get install -y kubelet kubeadm kubectl",
       "sudo apt-mark hold kubelet kubeadm kubectl",
       
-      # Configure system
+      # Configure system for Kubernetes
       "sudo swapoff -a",
       "sudo sed -i '/ swap / s/^/#/' /etc/fstab",
       "sudo modprobe br_netfilter",
       "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward",
-      "echo 'net.bridge.bridge-nf-call-iptables=1' | sudo tee -a /etc/sysctl.conf",
-      "echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf",
-      "sudo sysctl -p",
+      "cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF",
+      "cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF",
+      "sudo sysctl --system",
+      
+      # Initialize cluster with kubelet workaround
+      "sudo systemctl daemon-reload",
+      "sudo systemctl enable kubelet",
+      "sudo systemctl start kubelet || echo 'Kubelet start failed (may be normal during initialization)'",
       
       # Initialize cluster with retry
-      "max_retries=3",
+      "max_retries=5",
       "count=0",
-      "until sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=${google_compute_instance.master.network_interface.0.network_ip} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do sleep 30; count=$((count+1)); done",
+      "until sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=${google_compute_instance.master.network_interface.0.network_ip} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
+      "  echo \"Cluster initialization attempt \$((count+1)) failed. Retrying in 30 seconds...\"",
+      "  sleep 30",
+      "  sudo systemctl restart kubelet",
+      "  count=\$((count+1))",
+      "done",
       
       # Configure kubectl
-      "mkdir -p $HOME/.kube",
-      "sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config",
-      "sudo chown $(id -u):$(id -g) $HOME/.kube/config",
+      "mkdir -p \$HOME/.kube",
+      "sudo cp -i /etc/kubernetes/admin.conf \$HOME/.kube/config",
+      "sudo chown \$(id -u):\$(id -g) \$HOME/.kube/config",
       
-      # Install network plugin with retry
-      "count=0",
-      "until kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml && break || [ $count -eq $max_retries ]; do sleep 30; count=$((count+1)); done",
+      # Install network plugin
+      "kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml",
+      
+      # Verify node status
+      "until kubectl get nodes | grep -q 'Ready'; do sleep 5; done",
       
       # Clone repo and apply manifests
       "git clone https://github.com/${var.github_username}/${var.github_repo}.git /tmp/k8s-demo || echo 'Git clone failed (non-critical)'",
@@ -156,12 +178,12 @@ resource "google_compute_instance" "master" {
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
       private_key = tls_private_key.k8s_ssh.private_key_openssh
-      timeout     = "15m"
+      timeout     = "20m"
     }
   }
 }
 
-# Worker node with improved provisioning
+# Worker node with similar fixes
 resource "google_compute_instance" "worker" {
   name         = "k8s-worker"
   machine_type = "n2-standard-2"
@@ -185,32 +207,47 @@ resource "google_compute_instance" "worker" {
 
   provisioner "remote-exec" {
     inline = [
-      # Update and install basic dependencies
+      # Same system preparation as master
       "sudo apt-get update -y",
-      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release git software-properties-common",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release",
       
-      # Add Docker repo
-      "sudo mkdir -m 0755 -p /etc/apt/keyrings",
+      # Configure container runtime
+      "sudo mkdir -p /etc/apt/keyrings",
       "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
       "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null",
+      "sudo apt-get update -y",
+      "sudo apt-get install -y containerd.io",
+      "sudo mkdir -p /etc/containerd",
+      "sudo containerd config default | sudo tee /etc/containerd/config.toml",
+      "sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml",
+      "sudo systemctl restart containerd",
       
-      # Configure Kubernetes repo
+      # Install Kubernetes components
       "curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg",
       "echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list",
-      
-      # Install components
       "sudo apt-get update -y",
-      "sudo apt-get install -y docker-ce docker-ce-cli containerd.io kubelet kubeadm kubectl",
+      "sudo apt-get install -y kubelet kubeadm kubectl",
       "sudo apt-mark hold kubelet kubeadm kubectl",
       
-      # Configure system
+      # Configure system for Kubernetes
       "sudo swapoff -a",
       "sudo sed -i '/ swap / s/^/#/' /etc/fstab",
       "sudo modprobe br_netfilter",
       "echo '1' | sudo tee /proc/sys/net/ipv4/ip_forward",
-      "echo 'net.bridge.bridge-nf-call-iptables=1' | sudo tee -a /etc/sysctl.conf",
-      "echo 'net.ipv4.ip_forward=1' | sudo tee -a /etc/sysctl.conf",
-      "sudo sysctl -p"
+      "cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF",
+      "cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF",
+      "sudo sysctl --system",
+      
+      # Prepare kubelet
+      "sudo systemctl daemon-reload",
+      "sudo systemctl enable kubelet",
+      "sudo systemctl start kubelet || echo 'Kubelet start failed (may be normal during initialization)'"
     ]
 
     connection {
@@ -218,7 +255,7 @@ resource "google_compute_instance" "worker" {
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
       private_key = tls_private_key.k8s_ssh.private_key_openssh
-      timeout     = "10m"
+      timeout     = "15m"
     }
   }
 
@@ -228,9 +265,14 @@ resource "google_compute_instance" "worker" {
       "until nc -zv ${google_compute_instance.master.network_interface.0.network_ip} 6443; do sleep 10; done",
       
       # Join cluster with retry
-      "max_retries=3",
+      "max_retries=5",
       "count=0",
-      "until sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do sleep 30; count=$((count+1)); done"
+      "until sudo kubeadm join ${google_compute_instance.master.network_interface.0.network_ip}:6443 --token ${local.join_token} --discovery-token-ca-cert-hash ${local.discovery_token_ca_cert_hash} --ignore-preflight-errors=all && break || [ $count -eq $max_retries ]; do",
+      "  echo \"Join attempt \$((count+1)) failed. Retrying in 30 seconds...\"",
+      "  sleep 30",
+      "  sudo systemctl restart kubelet",
+      "  count=\$((count+1))",
+      "done"
     ]
 
     connection {
@@ -238,7 +280,7 @@ resource "google_compute_instance" "worker" {
       host        = self.network_interface[0].access_config[0].nat_ip
       user        = var.ssh_user
       private_key = tls_private_key.k8s_ssh.private_key_openssh
-      timeout     = "10m"
+      timeout     = "15m"
     }
   }
 
